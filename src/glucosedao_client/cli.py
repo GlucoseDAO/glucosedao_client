@@ -158,6 +158,27 @@ def main():
     app()
 
 
+def dev():
+    """Shortcut to launch client with server on 0.0.0.0."""
+    import sys
+    sys.argv = ["glucosedao-client", "launch", "--with-server", "--host", "0.0.0.0"]
+    app()
+
+
+def client():
+    """Shortcut to launch client only."""
+    import sys
+    sys.argv = ["glucosedao-client", "launch"]
+    app()
+
+
+def check_shortcut():
+    """Shortcut to check server health."""
+    import sys
+    sys.argv = ["glucosedao-client", "check"]
+    app()
+
+
 if __name__ == "__main__":
     main()
 

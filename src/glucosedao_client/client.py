@@ -12,7 +12,7 @@ import httpx
 # Configure logger
 logger = logging.getLogger("glurpc.client")
 logger.setLevel(logging.DEBUG)
-from glurpc import schemas
+#from glurpc import schemas
 
 @dataclass
 class GluRPCConfig:
