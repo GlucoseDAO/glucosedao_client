@@ -42,6 +42,9 @@ console_handler.setFormatter(console_formatter)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
+# Load API key from environment
+DEFAULT_API_KEY = os.getenv("GLURPC_API_KEY", "")
+
 # Global state
 client: Optional[GluRPCClient] = None
 current_handle: Optional[str] = None
@@ -209,11 +212,15 @@ def process_and_prepare(
     logger.info(f"Processing file: {file.name}")
     start_time = time.time()
     
+    # Debug API key handling
+    api_key_debug = f"{api_key[:16]}..." if api_key and len(api_key) > 8 else "(empty)" if not api_key else api_key
+    logger.debug(f"API key received: {api_key_debug}")
+    
     try:
         # Initialize client if needed
         if client is None or client.config.base_url != server_url:
             client = initialize_client(server_url, api_key if api_key else None)
-            logger.info(f"Initialized client for server: {server_url}")
+            logger.info(f"Initialized client for server: {server_url}, api_key: {api_key_debug}")
         
         logger.info("Converting file to unified format...")
         
@@ -295,11 +302,18 @@ def process_and_prepare(
         
     except Exception as e:
         duration = time.time() - start_time
-        logger.error(f"Processing failed after {duration:.3f}s: {e}", exc_info=True)
+        
+        # Provide helpful error message for 403 errors
+        error_message = str(e)
+        if "403" in error_message or "Forbidden" in error_message:
+            logger.error(f"Authentication failed after {duration:.3f}s: {e}", exc_info=True)
+            error_message = "Authentication failed (403 Forbidden). Please check your API key."
+        else:
+            logger.error(f"Processing failed after {duration:.3f}s: {e}", exc_info=True)
         
         warning_info = {
             'has_warnings': True,
-            'warning_messages': [f"Error during processing: {str(e)}"],
+            'warning_messages': [f"Error during processing: {error_message}"],
             'warning_count': 1
         }
         
@@ -307,7 +321,7 @@ def process_and_prepare(
             gr.update(visible=False),
             gr.update(visible=False),
             warning_info,
-            f"❌ Error: {str(e)}",
+            f"❌ Error: {error_message}",
             gr.update(visible=False),  # Keep save button hidden on error
             1  # Return default total_samples on error
         )
@@ -555,6 +569,8 @@ def check_server_health(server_url: str) -> Tuple[str, go.Figure, go.Figure]:
         Tuple of (HTML formatted static metrics, Request times figure, Queues/Other figure)
     """
     global health_history, health_timestamps
+    
+    logger.debug(f"Health check for server: {server_url}")
     
     try:
         temp_client = initialize_client(server_url, None)
@@ -823,12 +839,17 @@ def poll_health(server_url: str) -> Tuple[str, go.Figure, go.Figure]:
     return check_server_health(server_url)
 
 
-def create_gradio_app() -> gr.Blocks:
+def create_gradio_app(default_server_url: str = "http://localhost:8000") -> gr.Blocks:
     """Create and configure the Gradio application.
     
+    Args:
+        default_server_url: Default GluRPC server URL to use
+        
     Returns:
         Configured Gradio Blocks app
     """
+    logger.info(f"Creating Gradio app with default_server_url={default_server_url}")
+    
     with gr.Blocks(title="GluRPC Client - Glucose Prediction") as app:
         gr.Markdown("# 🩸 Glucose Prediction Tool (GluRPC Client)")
         gr.Markdown("Upload a CGM data file to get glucose predictions from the GluRPC server")
@@ -836,12 +857,12 @@ def create_gradio_app() -> gr.Blocks:
         with gr.Accordion("⚙️ Server Configuration", open=False):
             with gr.Row():
                 server_url_input = gr.Textbox(
-                    value="http://localhost:8000",
+                    value=default_server_url,
                     label="GluRPC Server URL",
-                    placeholder="http://localhost:8000"
+                    placeholder=default_server_url
                 )
                 api_key_input = gr.Textbox(
-                    value="",
+                    value=DEFAULT_API_KEY,
                     label="API Key (optional)",
                     placeholder="Enter API key if required",
                     type="password"
@@ -910,11 +931,33 @@ def create_gradio_app() -> gr.Blocks:
         warning_state = gr.State(value={})
         # Store total samples in state for index conversion
         total_samples_state = gr.State(value=1)
+        # Store server URL in state - initialized with default_server_url
+        # This ensures the value is available immediately when app.load() runs
+        server_url_state = gr.State(value=default_server_url)
+        # Store API key in state - initialized with DEFAULT_API_KEY from environment
+        # This ensures the value is available immediately and not empty string from uninitialized textbox
+        api_key_state = gr.State(value=DEFAULT_API_KEY)
         
-        # Initialize server health on load
+        # Sync textbox changes to state
+        server_url_input.change(
+            fn=lambda url: url,
+            inputs=[server_url_input],
+            outputs=[server_url_state],
+            queue=False
+        )
+        
+        # Sync API key textbox changes to state
+        api_key_input.change(
+            fn=lambda key: key,
+            inputs=[api_key_input],
+            outputs=[api_key_state],
+            queue=False
+        )
+        
+        # Initialize server health on load - use state which has immediate value
         app.load(
             fn=check_server_health,
-            inputs=[server_url_input],
+            inputs=[server_url_state],
             outputs=[health_status, health_graph_requests, health_graph_queues]
         )
         
@@ -922,21 +965,21 @@ def create_gradio_app() -> gr.Blocks:
         health_timer = gr.Timer(value=1.0, active=True)
         health_timer.tick(
             fn=poll_health,
-            inputs=[server_url_input],
+            inputs=[server_url_state],
             outputs=[health_status, health_graph_requests, health_graph_queues]
         )
         
         # Manual health button click
         health_button.click(
             fn=check_server_health,
-            inputs=[server_url_input],
+            inputs=[server_url_state],
             outputs=[health_status, health_graph_requests, health_graph_queues]
         )
         
-        # File upload event
+        # File upload event - use state variables to ensure correct values
         upload_event = file_input.change(
             fn=process_and_prepare,
-            inputs=[file_input, server_url_input, api_key_input],
+            inputs=[file_input, server_url_state, api_key_state],
             outputs=[index_slider, sample_count, warning_state, status_message, download_csv_btn, total_samples_state],
             queue=True
         )
@@ -966,7 +1009,8 @@ def create_gradio_app() -> gr.Blocks:
         )
         
         # Allow manual update when slider changes
-        slider_event = index_slider.change(
+        # Use release event instead of change to avoid triggering on initialization
+        slider_event = index_slider.release(
             fn=predict_glucose,
             inputs=[index_slider, total_samples_state],
             outputs=[plot_output, plot_status],
@@ -1016,7 +1060,8 @@ def create_gradio_app() -> gr.Blocks:
 def launch_app(
     share: bool = False,
     server_name: str = "127.0.0.1",
-    server_port: int = 7860
+    server_port: int = 7860,
+    default_server_url: str = "http://localhost:8000"
 ):
     """Launch the Gradio application.
     
@@ -1024,8 +1069,14 @@ def launch_app(
         share: Whether to create a public share link
         server_name: Server hostname
         server_port: Server port
+        default_server_url: Default GluRPC server URL to use
     """
-    app = create_gradio_app()
+    logger.info(f"Launching Gradio app with default_server_url={default_server_url}")
+    logger.info(f"Server name: {server_name}")
+    logger.info(f"Server port: {server_port}")
+    logger.info(f"Share: {share}")
+    
+    app = create_gradio_app(default_server_url=default_server_url)
     app.launch(
         share=share,
         server_name=server_name,

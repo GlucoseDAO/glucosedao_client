@@ -1,6 +1,6 @@
 [project]
 name = "glucosedao-client"
-version = "0.2.1"
+version = "0.3.1"
 description = "Reference client implementation for GluRPC - provides Python SDK and Gradio web interface for glucose prediction service."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,7 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "glurpc>=0.5.10",
+    "glurpc>=0.6.2",
     "pytest>=7.0.0",
 ]
 

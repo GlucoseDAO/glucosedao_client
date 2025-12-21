@@ -1,5 +1,6 @@
 """Command-line interface for GluRPC client."""
 from typing import Optional
+from urllib.parse import urlparse
 import typer
 from pathlib import Path
 
@@ -36,14 +37,14 @@ def launch(
         help="Start GluRPC server locally for testing"
     ),
     server_host: str = typer.Option(
-        "127.0.0.1",
+        "localhost",
         "--server-host",
-        help="GluRPC server host (when starting with --with-server)"
+        help="GluRPC server host (can include schema like https://example.com)"
     ),
     server_port_backend: int = typer.Option(
-        8000,
+        None,
         "--server-port",
-        help="GluRPC server port (when starting with --with-server)"
+        help="GluRPC server port (defaults: 80 for http, 443 for https, 8000 for no schema)"
     )
 ):
     """Launch the Gradio web interface.
@@ -52,6 +53,12 @@ def launch(
     
     # Launch client only (assumes server is running elsewhere)
     glucosedao-client launch
+    
+    # Launch client pointing to remote server
+    glucosedao-client launch --server-host https://glurpc-rest.glucosedao.org
+    
+    # Launch client with custom port
+    glucosedao-client launch --server-host https://example.com --server-port 8443
     
     # Launch client with local server for testing
     glucosedao-client launch --with-server
@@ -62,31 +69,67 @@ def launch(
     # Create public share link
     glucosedao-client launch --share
     """
+    # Parse server URL
+    parsed_host = urlparse(server_host)
+    
+    # Determine schema, host, and port
+    if parsed_host.scheme:
+        # Schema is present (http:// or https://)
+        schema = parsed_host.scheme
+        hostname = parsed_host.hostname or parsed_host.netloc
+        
+        # Determine default port based on schema
+        if server_port_backend is None:
+            if schema == "https":
+                port = 443
+            elif schema == "http":
+                port = 80
+            else:
+                port = 8000
+        else:
+            port = server_port_backend
+    else:
+        # No schema present - treat as plain hostname/IP
+        schema = "http"
+        hostname = server_host
+        port = server_port_backend if server_port_backend is not None else 8000
+    
+    # Build the server URL for Gradio app
+    if (schema == "http" and port == 80) or (schema == "https" and port == 443):
+        # Don't include port in URL if it's the default for the schema
+        default_server_url = f"{schema}://{hostname}"
+    else:
+        default_server_url = f"{schema}://{hostname}:{port}"
+    
     server_process = None
     
     try:
         if with_server:
             typer.echo("🚀 Starting GluRPC server for local testing...")
+            # For local server, always use http and the specified hostname/port
+            local_host = hostname if not parsed_host.scheme else "127.0.0.1"
             server_process = start_server(
-                host=server_host,
-                port=server_port_backend,
+                host=local_host,
+                port=port,
                 background=True,
                 wait=True
             )
             
-            if server_process is None and not is_server_running(f"http://{server_host}:{server_port_backend}"):
+            if server_process is None and not is_server_running(f"http://{local_host}:{port}"):
                 typer.echo("❌ Failed to start server", err=True)
                 raise typer.Exit(1)
         
         typer.echo(f"🚀 Launching Gradio client on {server_name}:{server_port}...")
+        typer.echo(f"   Default server URL: {default_server_url}")
         
         if with_server:
-            typer.echo(f"   Server running at http://{server_host}:{server_port_backend}")
+            typer.echo(f"   Local server running at {default_server_url}")
         
         launch_app(
             share=share,
             server_name=server_name,
-            server_port=server_port
+            server_port=server_port,
+            default_server_url=default_server_url
         )
         
     except KeyboardInterrupt:
